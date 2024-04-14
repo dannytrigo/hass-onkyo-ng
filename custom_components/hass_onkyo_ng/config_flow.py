@@ -69,6 +69,19 @@ class OnkyoReceiverConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         )
         return schema
 
+    async def async_confirm_receiver(self, host: str) -> (str, str):
+        _LOGGER.info("Connecting to receiver: {}", host)
+        onkyo_receiver = OnkyoReceiver(host, hass=None)
+        try:
+            info = await onkyo_receiver.get_receiver_info()
+            if info:
+                _LOGGER.debug("Retrieved receiver information")
+                return info.macaddress, info.model
+
+            raise UnsupportedModel()
+        finally:
+            onkyo_receiver.disconnect()
+
     async def async_step_user(self, user_input: dict[str, Any] = None) -> FlowResult:
         """Handle initial step of user config flow."""
 
@@ -84,28 +97,11 @@ class OnkyoReceiverConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                     raise InvalidHost()
 
                 # now let's try and see if we can connect to a receiver
-                onkyo_receiver = OnkyoReceiver(host, hass=None)
-                try:
-                    info = onkyo_receiver.receiver_info
-                    if info:
-                        _LOGGER.debug("Found host: %s", host)
-                    else:
-                        _LOGGER.debug("Host not found: %s", host)
-                        raise ConnectionError()
+                unique_id, model_name = await self.async_confirm_receiver(host)
 
-                    # use the MAC as unique id
-                    unique_id = info.macaddress
-                    model_name = info.model
-
-                    # check if we got something
-                    if not unique_id:
-                        raise UnsupportedModel()
-
-                    # set the unique id for the entry, abort if it already exists
-                    await self.async_set_unique_id(unique_id)
-                    self._abort_if_unique_id_configured()
-                finally:
-                    onkyo_receiver.disconnect()
+                # set the unique id for the entry, abort if it already exists
+                await self.async_set_unique_id(unique_id)
+                self._abort_if_unique_id_configured()
 
                 # compile a name from model and serial
                 return self.async_create_entry(
@@ -146,27 +142,11 @@ class OnkyoReceiverConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         # if the hostname already exists, we can stop
         self._async_abort_entries_match({CONF_HOST: self.host})
 
-        # now let's try and see if we can connect to a receiver
-        _LOGGER.info("Onkyo connect to {}", self.host)
-        onkyo_receiver = OnkyoReceiver(self.host, hass=None)
         try:
-            _LOGGER.info("CONNECTED")
-            onkyo_receiver.command_sync('main.power=query')
-            onkyo_receiver.command_sync('dock.receiver-information=query')
-            info = onkyo_receiver.receiver_info
-            if info:
-                _LOGGER.debug("Found host: %s", self.host)
-            else:
-                _LOGGER.debug("Host not found: %s", self.host)
-                raise ConnectionError()
-
-            # use the MAC as unique id
-            unique_id = info.macaddress
-            model_name = info.model
-
-            # check if we got something
-            if not unique_id:
-                return self.async_abort(reason="unsupported_model")
+            # now let's try and see if we can connect to a receiver
+            _LOGGER.info("Onkyo connect to {}", self.host)
+            # now let's try and see if we can connect to a receiver
+            unique_id, model_name = await self.async_confirm_receiver(self.host)
 
             # set the unique id for the entry, abort if it already exists
             await self.async_set_unique_id(unique_id)
@@ -186,8 +166,6 @@ class OnkyoReceiverConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             return await self.async_step_zeroconf_confirm()
         except:
             return self.async_abort(reason="Exception during zeroconf flow")
-        finally:
-            onkyo_receiver.disconnect()
 
     async def async_step_zeroconf_confirm(
         self, user_input: dict[str, Any] = None
@@ -201,7 +179,7 @@ class OnkyoReceiverConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 title=user_input[CONF_NAME],
                 data={
                     CONF_NAME: user_input[CONF_NAME],
-                    CONF_HOST: self.host,
+                    CONF_HOST: user_input[CONF_HOST],
                     CONF_SCAN_INTERVAL: user_input[CONF_SCAN_INTERVAL],
                 },
             )

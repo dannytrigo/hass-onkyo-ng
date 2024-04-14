@@ -4,7 +4,6 @@ from datetime import timedelta
 from typing import Any
 
 from .const import *
-
 from homeassistant.core import HomeAssistant
 from homeassistant.const import CONF_HOST, CONF_SCAN_INTERVAL
 from homeassistant.config_entries import ConfigEntry
@@ -39,17 +38,14 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         )
         await onkyo_receiver.load_data()
 
-        retries = 3
-        receiver_info = None
-        while receiver_info is None and retries > 0:
-            retries -= 1
-            try:
-                receiver_info = onkyo_receiver.receiver_info
-            except Exception as error:
-                _LOGGER.error("Error getting receiver information", error)
-                raise error
+        receiver_info = await onkyo_receiver.get_receiver_info()
+
+        if not receiver_info:
+            _LOGGER.error("Error getting receiver information")
+            return False
 
         _LOGGER.info(receiver_info)
+
         name = receiver_info.model
         serial = receiver_info.serial
         productid = receiver_info.productid

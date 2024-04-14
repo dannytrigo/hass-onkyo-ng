@@ -4,8 +4,10 @@ from __future__ import annotations
 from collections.abc import Callable
 from typing import Any
 
+import voluptuous as vol
 from . import OnkyoDataUpdateCoordinator, OnkyoReceiverEntity
-
+from homeassistant.core import SupportsResponse
+from homeassistant.helpers import entity_platform, config_validation as cv
 from homeassistant.components.media_player import (
     MediaPlayerEntity,
     MediaPlayerEntityFeature,
@@ -18,6 +20,7 @@ from homeassistant.util import slugify
 from .onkyo import OnkyoReceiver
 
 import logging
+import asyncio
 
 from .const import *
 
@@ -43,21 +46,46 @@ SUPPORT_ONKYO = (
 DEFAULT_PLAYABLE_SOURCES = ("fm", "am", "tuner")
 
 
+def add_services():
+    platform = entity_platform.async_get_current_platform()
+    platform.async_register_entity_service(
+        "onkyo_send_command",
+        {
+            vol.Required('command'): cv.string
+        },
+        OnkyoMediaPlayer.send_command.__name__,
+        supports_response=SupportsResponse.ONLY
+    )
+    platform.async_register_entity_service(
+        "onkyo_send_raw_command",
+        {
+            vol.Required('command'): cv.string
+        },
+        OnkyoMediaPlayer.send_raw_command.__name__,
+        supports_response=SupportsResponse.ONLY
+    )
+
 async def async_setup_entry(
     hass: HomeAssistantType, entry: ConfigEntry, async_add_entities: Callable
 ):
     """Setup media player entity."""
-
     _LOGGER.debug("async_setup_entry called")
+    add_services()
 
     entities = []
 
     coordinator = hass.data[DOMAIN][entry.entry_id]
     receiver: OnkyoReceiver = coordinator.onkyo_receiver
-    zones = receiver.receiver_info.zones
+
+    receiver_info = await receiver.get_receiver_info()
+    if not receiver_info:
+        _LOGGER.error("Could not retrieve receiver info")
+        return False
+
+    _LOGGER.info(f"Creating mediaplayer entities for zones: {receiver_info.zones}")
 
     # Create a media player entity for each supported zone
-    for zone in zones:
+    for zone in receiver_info.zones:
         _LOGGER.info(f"Set up Onkyo zone: {zone.name}")
         entities.append(OnkyoMediaPlayer(coordinator, zone))
 
@@ -93,12 +121,6 @@ class OnkyoMediaPlayer(OnkyoReceiverEntity, MediaPlayerEntity):
         self._receiver_max_volume = self._onkyo_receiver._receiver_max_volume
         self._attr_source_list = [source.name for source in zone.sources]
 
-        # prepare sound mode list
-        self._reverse_sound_mode_mapping = self._onkyo_receiver._reverse_sound_mode_mapping
-        sound_mode = coordinator.data.get(self._zone_key, {}).get(ATTR_SOUND_MODE)
-        if sound_mode and sound_mode in self._reverse_sound_mode_mapping:
-            self._attr_sound_mode = self._reverse_sound_mode_mapping[sound_mode]
-
         self._attr_extra_state_attributes = {}
         self._hdmi_out_supported = True
         self._audio_info_supported = True
@@ -132,7 +154,7 @@ class OnkyoMediaPlayer(OnkyoReceiverEntity, MediaPlayerEntity):
     @property
     def sound_mode_list(self) -> list[str] | None:
         """List of available sound modes"""
-        return self.coordinator.data[ATTR_SOUND_MODES]
+        return self.zone_data[ATTR_SOUND_MODES]
 
     @property
     def sound_mode(self) -> str | None:
@@ -174,6 +196,9 @@ class OnkyoMediaPlayer(OnkyoReceiverEntity, MediaPlayerEntity):
 
         if ATTR_HDMI_OUT in data:
             extra_state_attributes[ATTR_HDMI_OUT] = data[ATTR_HDMI_OUT]
+
+        if ATTR_DISPLAY in data:
+            extra_state_attributes[ATTR_DISPLAY] = data[ATTR_DISPLAY]
 
         return extra_state_attributes
 
@@ -225,8 +250,7 @@ class OnkyoMediaPlayer(OnkyoReceiverEntity, MediaPlayerEntity):
 
     def select_sound_mode(self, sound_mode: str) -> None:
         """Set the sound mode."""
-        if self._reverse_sound_mode_mapping and sound_mode in self._reverse_sound_mode_mapping:
-            self._onkyo_receiver.command(f"{self._zone_name}.listening-mode={self._reverse_sound_mode_mapping[sound_mode]}")
+        self._onkyo_receiver.select_sound_mode(self._zone, sound_mode)
 
     def play_media(self, media_type: str, media_id: str, **kwargs: Any) -> None:
         """Play radio station by preset number."""
@@ -237,3 +261,15 @@ class OnkyoMediaPlayer(OnkyoReceiverEntity, MediaPlayerEntity):
     def select_output(self, output):
         """Set hdmi-out."""
         self._onkyo_receiver.command(f"{self._zone_name}.hdmi-output-selector={output}")
+
+    async def send_command(self, command):
+        result = await asyncio.wait_for(self._onkyo_receiver.command_async(command), 5.0)
+        return {
+            'result': result
+        }
+
+    async def send_raw_command(self, command):
+        result = await asyncio.wait_for(self._onkyo_receiver.raw_async(command), 5.0)
+        return {
+            'result': result
+        }
