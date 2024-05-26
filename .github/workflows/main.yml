@@ -13,5 +13,5 @@ jobs:
           git config user.name github-actions
           git config user.email github-actions@github.com
           git fetch origin ${GITHUB_REF}
-          git merge FETCH_HEAD
+          git merge origin ${GITHUB_HEAD_REF}
           git push
